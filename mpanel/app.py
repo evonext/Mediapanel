@@ -519,6 +519,10 @@ class MainWindow(QWidget):
         self.s_accent.toggled.connect(self._accent_toggled)
         self.s_follow = Switch(self.cfg.get("clip_follow"))
         self.s_follow.toggled.connect(self._follow_toggled)
+        self.s_static = QComboBox()
+        self.s_static.addItem("Обложка / фото", "art")
+        self.s_static.addItem("Визуализатор", "viz")
+        self.s_static.currentIndexChanged.connect(lambda _: self._set_static_view(self.s_static.currentData()))
         self.s_noclip = Switch(self.cfg.get("no_clip"))
         self.s_noclip.toggled.connect(self._set_no_clip)
         self.s_autosync = Switch(self.cfg.get("auto_sync"))
@@ -531,6 +535,7 @@ class MainWindow(QWidget):
             ("Пики на столбцах", "Задерживающиеся «колпачки»", self.s_peaks),
             ("Цвет из обложки", "Акцент интерфейса подстраивается под альбом", self.s_accent),
             ("Клип следует за паузой", "Пауза и воспроизведение клипа вместе с музыкой", self.s_follow),
+            ("Что показывать без клипа", "Обложка альбома (или фото исполнителя) либо визуализатор (B)", self.s_static),
             ("Режим без клипа", "Отключает поток YouTube: только обложка или визуализатор — для слабого интернета (N)", self.s_noclip),
             ("Автосинхронизация", "Клип сам подтягивается к музыке и повторно — через 2 с", self.s_autosync),
             ("Поверх всех окон", "Панель остаётся над остальными окнами (P)", self.s_top),
@@ -567,6 +572,7 @@ class MainWindow(QWidget):
             self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.s_autosync.setChecked(bool(self.cfg.get("auto_sync")))
         self._set_no_clip(bool(self.cfg.get("no_clip")), init=True)
+        self._set_static_view(self.cfg.get("static_view"), init=True)
         self.glass.b_pin.setChecked(on_top)
         self._update_off()
         self.stack.setCurrentIndex(1 if self.design == "glass" else 0)
@@ -741,7 +747,7 @@ class MainWindow(QWidget):
                 if self.state.dur <= 0 and res.get("dur"):
                     self.c_dur.set_value(fmt(res["dur"]))
                     self._glass_track()
-                if self.cover_pm is None and res.get("cover"):
+                if res.get("cover") and (self.cover_pm is None or self.cover_pm.width() < 700):
                     self._fetch_cover(key, res["cover"])
                 if res.get("album_id"):
                     self._attach_album_id(key, res["album_id"])
@@ -769,7 +775,7 @@ class MainWindow(QWidget):
 
     def _fetch_cover(self, key, url):
         def done(data):
-            if key == self.track_key and self.cover_pm is None:
+            if key == self.track_key and (self.cover_pm is None or self.cover_pm.width() < 700):
                 self._set_cover(data)
         bg(lambda: http_get(url, 12), done, lambda e: None)
 
@@ -783,6 +789,8 @@ class MainWindow(QWidget):
         if img.isNull():
             return
         pm = QPixmap.fromImage(img)
+        if self.cover_pm is not None and self.cover_pm.width() >= 700 and pm.width() < self.cover_pm.width():
+            return   # уже есть обложка лучше качеством
         self.cover_pm = pm
         self.cover.set_pixmap(pm)
         self.glass.set_cover(pm)
@@ -921,6 +929,7 @@ class MainWindow(QWidget):
         g.b_ext.clicked.connect(self._open_ext)
         g.b_swap.clicked.connect(self._toggle_design)
         g.b_own.clicked.connect(self._toggle_own)
+        g.b_static.clicked.connect(lambda: self._set_static_view("viz" if g.b_static.isChecked() else "art"))
         g.b_noclip.clicked.connect(lambda: self._set_no_clip(g.b_noclip.isChecked()))
         g.b_cmute.clicked.connect(self._sa_toggle_mute)
         g.cvol.changed.connect(lambda v: self._sa_set_volume(int(round(v * 100))))
@@ -1021,6 +1030,18 @@ class MainWindow(QWidget):
                 self.glass.show_drawer("clips")
             own = self.standalone or not (self.state.has_session and self.state.playing)
             self.search_clip(q, "", "", 0, True, rank=False, own=own)
+
+    def _set_static_view(self, v, init=False):
+        v = v if v in ("art", "viz") else "art"
+        self.cfg.set("static_view", v)
+        for b in (self.backdrop_p, self.glass.backdrop):
+            b.set_use_art(v == "art")
+        self.glass.b_static.setChecked(v == "viz")
+        self.s_static.blockSignals(True)
+        self.s_static.setCurrentIndex(self.s_static.findData(v))
+        self.s_static.blockSignals(False)
+        if not init:
+            self.toast.show_text("Без клипа: " + ("обложка" if v == "art" else "визуализатор"))
 
     def _set_no_clip(self, v, init=False):
         v = bool(v)
@@ -1593,6 +1614,8 @@ class MainWindow(QWidget):
                 self._toggle_design()
             elif k == Qt.Key_O:
                 self._toggle_own()
+            elif k == Qt.Key_B:
+                self._set_static_view("viz" if self.cfg.get("static_view") == "art" else "art")
             elif k == Qt.Key_N:
                 self._set_no_clip(not self.cfg.get("no_clip"))
             elif k == Qt.Key_V:

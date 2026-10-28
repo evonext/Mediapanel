@@ -925,6 +925,7 @@ class Backdrop(QWidget):
         super().__init__()
         self.pm = None
         self.small = None
+        self.use_art = True
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self.viz = VizWidget(analyzer)
@@ -934,13 +935,20 @@ class Backdrop(QWidget):
         self.pm = pm if (pm is not None and not pm.isNull()) else None
         self.small = (self.pm.scaled(32, 32, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
                       if self.pm else None)
-        self.viz.setVisible(self.pm is None)
+        self._apply()
+
+    def set_use_art(self, v: bool):
+        self.use_art = bool(v)
+        self._apply()
+
+    def _apply(self):
+        self.viz.setVisible(self.pm is None or not self.use_art)
         self.update()
 
     def paintEvent(self, e):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(5, 7, 11))
-        if self.pm is None:
+        if self.pm is None or not self.use_art:
             return
         W, H = self.width(), self.height()
         p.setRenderHint(QPainter.SmoothPixmapTransform)
@@ -959,5 +967,7 @@ class Backdrop(QWidget):
         path = QPainterPath()
         path.addRoundedRect(r, 20, 20)
         p.setClipPath(path)
-        sp = self.pm.scaled(s, s, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-        p.drawPixmap(r.toRect(), sp, QRect((sp.width() - s) // 2, (sp.height() - s) // 2, s, s))
+        dpr = self.devicePixelRatioF()
+        sd = int(s * dpr)
+        sp = self.pm.scaled(sd, sd, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        p.drawPixmap(r.toRect(), sp, QRect((sp.width() - sd) // 2, (sp.height() - sd) // 2, sd, sd))
