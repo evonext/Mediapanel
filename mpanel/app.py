@@ -14,23 +14,23 @@ from PySide6.QtGui import (QColor, QDesktopServices, QIcon, QImage, QPainter,  #
 from PySide6.QtWidgets import (QApplication, QComboBox, QHBoxLayout, QLabel,  # noqa: E402
                                QLineEdit, QListView, QListWidget, QListWidgetItem,
                                QScrollArea, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget,
-                               QGridLayout)
+                               QGridLayout, QPushButton, QStackedWidget)
 
 from . import catalog, core, theme as T  # noqa: E402
 from .audio import Analyzer  # noqa: E402
 from .core import Settings, bg, data_dir, http_get  # noqa: E402
 from .media import DemoMedia, MediaState, WinMedia  # noqa: E402
 from .sysvol import SysVolume  # noqa: E402
-from .widgets import (AspectBox, Chip, Cover, Dot, ElideLabel, IconButton, KeyHint,  # noqa: E402
+from .glass import GlassIcon, GlassView  # noqa: E402
+from .widgets import (TrackDelegate, fmt, AspectBox, Chip, Cover, Dot, ElideLabel, IconButton, KeyHint,  # noqa: E402
                       Panel, SegMeter, SettingRow, Switch, TagButton, VizWidget)
 
 PROG_SEGS = 60
 
 
-def fmt(sec: float) -> str:
-    sec = int(max(0, sec))
-    h, m, s = sec // 3600, (sec // 60) % 60, sec % 60
-    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+class SwapButton(IconButton):
+    def _icon(self, p, fg, w, h):
+        GlassIcon._icon(self, p, fg, w, h)
 
 
 def dominant_color(pm: QPixmap):
@@ -68,45 +68,6 @@ def make_icon() -> QIcon:
     p.drawEllipse(QPointF(64, 64), 9, 9)
     p.end()
     return QIcon(pm)
-
-
-class TrackDelegate(QStyledItemDelegate):
-    def paint(self, p, opt, idx):
-        d = idx.data(Qt.UserRole) or {}
-        r = opt.rect
-        p.save()
-        p.setRenderHint(QPainter.Antialiasing)
-        cur = bool(d.get("current"))
-        hov = bool(opt.state & QStyle.State_MouseOver)
-        rr = QRectF(r).adjusted(1, 1, -1, -1)
-        if cur:
-            c = T.acc()
-            c.setAlpha(30)
-            p.setBrush(c)
-            p.setPen(Qt.NoPen)
-            p.drawRoundedRect(rr, 3, 3)
-        elif hov:
-            p.setBrush(QColor(T.PANEL2))
-            p.setPen(Qt.NoPen)
-            p.drawRoundedRect(rr, 3, 3)
-        p.setFont(T.mono(11, True))
-        fm = p.fontMetrics()
-        y = r.top() + (r.height() + fm.ascent() - fm.descent()) // 2
-        p.setPen(T.acc() if cur else QColor(T.MUTED))
-        p.drawText(r.left() + 8, y, "▶" if cur else f"{int(d.get('n', 0)):02d}")
-        dur = fmt(d.get("dur", 0)) if d.get("dur") else ""
-        dw = fm.horizontalAdvance(dur)
-        p.drawText(r.right() - dw - 8, y, dur)
-        p.setFont(T.ui(13, cur))
-        p.setPen(T.acc2() if cur else QColor(T.TEXT))
-        fm2 = p.fontMetrics()
-        tx = fm2.elidedText(d.get("title", ""), Qt.ElideRight, r.width() - 40 - dw - 24)
-        y2 = r.top() + (r.height() + fm2.ascent() - fm2.descent()) // 2
-        p.drawText(r.left() + 36, y2, tx)
-        p.restore()
-
-    def sizeHint(self, opt, idx):
-        return QSize(0, 28)
 
 
 class Toast(QLabel):
@@ -155,6 +116,20 @@ class MainWindow(QWidget):
         self._bg_cache = None
         self._dark_done = False
         self._pending_vol = None
+        self.design = self.cfg.get("design") if self.cfg.get("design") in ("pult", "glass") else "pult"
+        self.standalone = False
+        self.sa_cur = {}
+        self.sa_idx = -1
+        self.sa_dur = 0.0
+        self.sa_pos = 0.0
+        self.sa_playing = False
+        self.sa_paused_ext = False
+        self.album_tracks = []
+        self.album_name = ""
+        self.ext_clip = None
+        self._sync_token = 0
+        self._last_pos = None
+        self._last_auto = 0.0
 
         # --- источники
         self.sysvol = SysVolume()
@@ -179,9 +154,23 @@ class MainWindow(QWidget):
         QTimer.singleShot(2800, self._check_backend)
         self._rebuild_shelf()
 
+    @property
+    def clip(self):
+        return self.clip_g if self.design == "glass" else self.clip_p
+
     # ============================================================== построение интерфейса
     def _build(self):
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        self.stack = QStackedWidget()
+        outer.addWidget(self.stack)
+        page = QWidget()
+        self.stack.addWidget(page)
+        self.glass = GlassView(self.an)
+        self.stack.addWidget(self.glass)
+        self.clip_g = self.glass.clip
+        self.vizs = []
+        root = QVBoxLayout(page)
         root.setContentsMargins(24, 18, 24, 12)
         root.setSpacing(12)
         root.addWidget(self._build_header())
@@ -204,10 +193,12 @@ class MainWindow(QWidget):
         foot.setSpacing(18)
         for keys, txt in ((["Space"], "плей/пауза"), (["←", "→"], "трек"), (["↑", "↓"], "громкость"),
                           (["M"], "звук"), (["V"], "визуал"), (["C"], "клип"), (["/"], "поиск"),
-                          (["F"], "весь экран"), (["P"], "поверх окон")):
+                          (["F"], "весь экран"), (["P"], "поверх окон"), (["D"], "дизайн")):
             foot.addWidget(KeyHint(keys, txt))
         foot.addStretch(1)
         root.addLayout(foot)
+        self.vizs = [self.viz, self.glass.viz]
+        self._wire_glass()
 
     def _build_header(self):
         pn = Panel(None, margins=(18, 12, 18, 12))
@@ -259,10 +250,12 @@ class MainWindow(QWidget):
         self.b_clipvis = IconButton("clip", 38, tip="Показать / скрыть клип (C)")
         self.b_clipvis.setCheckable(True)
         self.b_full = IconButton("full", 38, tip="Во весь экран (F)")
+        self.b_design = SwapButton("swap", 38, tip="Второй дизайн — Liquid (D)")
+        self.b_design.clicked.connect(self._toggle_design)
         self.b_pin.clicked.connect(lambda: self._set_on_top(self.b_pin.isChecked()))
         self.b_clipvis.clicked.connect(lambda: self._set_clip_visible(self.b_clipvis.isChecked()))
         self.b_full.clicked.connect(self._toggle_full)
-        for b in (self.b_pin, self.b_clipvis, self.b_full):
+        for b in (self.b_design, self.b_pin, self.b_clipvis, self.b_full):
             row.addWidget(b, 0, Qt.AlignVCenter)
         pn.lay.addLayout(row)
         self._update_meta()
@@ -322,7 +315,7 @@ class MainWindow(QWidget):
         self.b_prev = IconButton("prev", 40, tip="Предыдущий трек")
         self.b_play = IconButton("play", 54, primary=True, tip="Плей / пауза")
         self.b_next = IconButton("next", 40, tip="Следующий трек")
-        self.b_prev.clicked.connect(lambda: self.media.cmd("prev"))
+        self.b_prev.clicked.connect(lambda: self.media.cmd("prev"))  # внешний плеер
         self.b_next.clicked.connect(lambda: self.media.cmd("next"))
         self.b_play.clicked.connect(lambda: self.media.cmd("toggle"))
         tr.addWidget(self.b_prev)
@@ -361,11 +354,8 @@ class MainWindow(QWidget):
         self.t_autoclip.setToolTip("Автоматически искать клип при смене трека")
         self.t_autoclip.toggled.connect(lambda v: self.cfg.set("auto_clip", bool(v)))
         pn.head.addWidget(self.t_autoclip)
-        self.clip = clipmod.ClipPlayer()
-        self.clip.ready.connect(self._clip_ready)
-        self.clip.failed.connect(self._clip_failed)
-        self.clip.tick.connect(self._clip_tick)
-        pn.lay.addWidget(AspectBox(self.clip, 240))
+        self.clip_p = clipmod.ClipPlayer()
+        pn.lay.addWidget(AspectBox(self.clip_p, 240))
 
         row = QHBoxLayout()
         row.setSpacing(5)
@@ -395,6 +385,34 @@ class MainWindow(QWidget):
             row.addWidget(w)
         pn.lay.addLayout(row)
         self._update_off()
+
+        # --- «свой трек»: клип со звуком и собственным управлением
+        self.sa_row = QWidget()
+        sl = QHBoxLayout(self.sa_row)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.setSpacing(8)
+        self.b_sa_play = IconButton("pause", 32, tip="Плей / пауза клипа")
+        self.sa_time = QLabel("0:00 / --:--")
+        self.sa_time.setFont(T.mono(11, True))
+        self.sa_time.setStyleSheet(f"color:{T.MUTED}")
+        self.sa_prog = SegMeter(0, PROG_SEGS - 1, 0, color="cy", seg_h=8)
+        self.b_sa_mute = IconButton("vol", 32, tip="Звук клипа")
+        self.sa_vol = SegMeter(0, 20, 14, floor=0, seg_h=10)
+        self.sa_vol.setFixedWidth(96)
+        self.b_sa_back = QPushButton("К музыке")
+        self.b_sa_back.setObjectName("ghost")
+        self.b_sa_back.setCursor(Qt.PointingHandCursor)
+        self.b_sa_back.setFocusPolicy(Qt.NoFocus)
+        self.b_sa_play.clicked.connect(self._sa_toggle)
+        self.b_sa_mute.clicked.connect(self._sa_toggle_mute)
+        self.sa_prog.changed.connect(lambda v: self._sa_seek(v / (PROG_SEGS - 1)))
+        self.sa_vol.changed.connect(lambda v: self._sa_set_volume(int(v) * 5))
+        self.b_sa_back.clicked.connect(lambda: self._exit_standalone(True))
+        for w, st in ((self.b_sa_play, 0), (self.sa_prog, 1), (self.sa_time, 0), (self.b_sa_mute, 0),
+                      (self.sa_vol, 0), (self.b_sa_back, 0)):
+            sl.addWidget(w, st)
+        self.sa_row.hide()
+        pn.lay.addWidget(self.sa_row)
 
         sr = QHBoxLayout()
         sr.setSpacing(6)
@@ -467,11 +485,13 @@ class MainWindow(QWidget):
         self.s_sens.setFixedWidth(150)
         self.s_sens.changed.connect(self._sens_changed)
         self.s_peaks = Switch(self.cfg.get("peaks"))
-        self.s_peaks.toggled.connect(lambda v: (self.cfg.set("peaks", v), setattr(self.viz, "peaks", v)))
+        self.s_peaks.toggled.connect(lambda v: (self.cfg.set("peaks", v), self._viz_set("peaks", v)))
         self.s_accent = Switch(self.cfg.get("auto_accent"))
         self.s_accent.toggled.connect(self._accent_toggled)
         self.s_follow = Switch(self.cfg.get("clip_follow"))
         self.s_follow.toggled.connect(self._follow_toggled)
+        self.s_autosync = Switch(self.cfg.get("auto_sync"))
+        self.s_autosync.toggled.connect(self._autosync_toggled)
         self.s_top = Switch(self.cfg.get("on_top"))
         self.s_top.toggled.connect(self._set_on_top)
         rows = [
@@ -480,6 +500,7 @@ class MainWindow(QWidget):
             ("Пики на столбцах", "Задерживающиеся «колпачки»", self.s_peaks),
             ("Цвет из обложки", "Акцент интерфейса подстраивается под альбом", self.s_accent),
             ("Клип следует за паузой", "Пауза и воспроизведение клипа вместе с музыкой", self.s_follow),
+            ("Автосинхронизация", "Клип сам подтягивается к музыке и повторно — через 2 с", self.s_autosync),
             ("Поверх всех окон", "Панель остаётся над остальными окнами (P)", self.s_top),
         ]
         for i, (t, h, c) in enumerate(rows):
@@ -501,8 +522,9 @@ class MainWindow(QWidget):
         self.s_mode.blockSignals(True)
         self.s_mode.setCurrentIndex(i)
         self.s_mode.blockSignals(False)
-        self.viz.set_mode(self.s_mode.currentData())
-        self.viz.peaks = bool(self.cfg.get("peaks"))
+        for v in self.vizs:
+            v.set_mode(self.s_mode.currentData())
+        self._viz_set("peaks", bool(self.cfg.get("peaks")))
         self._sens_changed(self.cfg.get("sens"), save=False)
         self.t_autoclip.setChecked(bool(self.cfg.get("auto_clip")))
         self.b_clipvis.setChecked(bool(self.cfg.get("clip_visible")))
@@ -511,11 +533,16 @@ class MainWindow(QWidget):
         self.b_pin.setChecked(on_top)
         if on_top:
             self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+        self.s_autosync.setChecked(bool(self.cfg.get("auto_sync")))
+        self.glass.b_pin.setChecked(on_top)
+        self._update_off()
+        self.stack.setCurrentIndex(1 if self.design == "glass" else 0)
         self._update_info()
 
     def _viz_mode_changed(self, _):
         m = self.s_mode.currentData()
-        self.viz.set_mode(m)
+        for v in self.vizs:
+            v.set_mode(m)
         self.cfg.set("viz_mode", m)
 
     def _cycle_viz(self):
@@ -524,7 +551,7 @@ class MainWindow(QWidget):
         self.toast.show_text("Визуализация: " + self.s_mode.currentText())
 
     def _sens_changed(self, v, save=True):
-        self.viz.sens = 0.5 + (int(v) - 1) / 9 * 1.5
+        self._viz_set("sens", 0.5 + (int(v) - 1) / 9 * 1.5)
         if save:
             self.cfg.set("sens", int(v))
 
@@ -540,6 +567,7 @@ class MainWindow(QWidget):
         on = bool(on)
         self.cfg.set("on_top", on)
         self.b_pin.setChecked(on)
+        self.glass.b_pin.setChecked(on)
         self.s_top.blockSignals(True)
         self.s_top.setChecked(on)
         self.s_top.blockSignals(False)
@@ -603,6 +631,9 @@ class MainWindow(QWidget):
         self.c_src.set_value(st.app or "—")
         if st.dur > 0:
             self.c_dur.set_value(fmt(st.dur))
+            if not self.standalone:
+                self.glass.p_dur.set_text(fmt(st.dur))
+        self.glass.p_src.set_text("КЛИП" if self.standalone else (st.app or "—"))
         self.dot.state = "ok"
         self.h_state.setText("СЕССИЯ АКТИВНА")
         self._update_meta()
@@ -610,15 +641,19 @@ class MainWindow(QWidget):
     def _no_session(self, st):
         if self.track_key is not None:
             self.track_key = None
+            if self.standalone:
+                self._exit_standalone(False)
             self.l_title.setText("—")
             self.l_sub.setText("")
             self.cover.set_pixmap(None)
+            self.glass.set_cover(None)
             self.cover_pm = None
             self.setWindowTitle("Media Panel")
         self.last_playing = False
-        self.viz.playing = False
+        self._viz_set("playing", False)
         self.c_state.set_value("PAUSE", T.CY)
         self.b_play.set_kind("play")
+        self._glass_track()
         self.dot.state = "bad" if getattr(self.media, "error", None) else "dim"
         self.h_state.setText("НЕТ МЕДИА-СЕССИИ — включи музыку в любом плеере")
         self.c_src.set_value("—")
@@ -626,19 +661,31 @@ class MainWindow(QWidget):
         self._update_meta()
 
     def _on_play_changed(self, playing: bool):
-        self.viz.playing = playing
+        self._viz_set("playing", playing)
         self.c_state.set_value("PLAY" if playing else "PAUSE", T.OK if playing else T.CY)
         self.b_play.set_kind("pause" if playing else "play")
+        if playing and self.standalone:
+            self._exit_standalone(False)   # музыку запустили снова — клип возвращается в параллельный режим
+        if not self.standalone:
+            self.glass.set_playing(playing)
         self._apply_clip_play_state()
+        if playing:
+            self._auto_sync()
 
     def _on_track(self, st: MediaState):
         self.track_key = st.key
+        self._last_pos = None
+        self.sa_paused_ext = False
+        if self.standalone:
+            self._exit_standalone(False)
         self.catalog = None
         self.l_title.setText(st.title or "—")
         self.l_sub.setText(" · ".join(x for x in (st.artist, st.album) if x))
         self.cover.set_pixmap(None)
         self.cover_pm = None
         self.c_dur.set_value(fmt(st.dur) if st.dur > 0 else "--:--")
+        self.glass.set_cover(None)
+        self._glass_track()
         self.setWindowTitle(f"{st.artist} — {st.title} · Media Panel" if st.artist else f"{st.title} · Media Panel")
         key = st.key
         a, t, al = st.artist, st.title, st.album
@@ -656,6 +703,7 @@ class MainWindow(QWidget):
             if res:
                 if self.state.dur <= 0 and res.get("dur"):
                     self.c_dur.set_value(fmt(res["dur"]))
+                    self._glass_track()
                 if self.cover_pm is None and res.get("cover"):
                     self._fetch_cover(key, res["cover"])
                 if res.get("album_id"):
@@ -666,8 +714,9 @@ class MainWindow(QWidget):
                 self.show_album(None, al, a)
 
         bg(work, done, lambda e: core.log("catalog:", e))
+        self.ext_clip = (f"{a} {t} official video".strip(), a, t, int(st.dur))
         if self.cfg.get("auto_clip"):
-            self.search_clip(f"{a} {t} official video".strip(), a, t, int(st.dur), True)
+            self.search_clip(*self.ext_clip, True)
 
     def _fetch_cover(self, key, url):
         def done(data):
@@ -687,6 +736,7 @@ class MainWindow(QWidget):
         pm = QPixmap.fromImage(img)
         self.cover_pm = pm
         self.cover.set_pixmap(pm)
+        self.glass.set_cover(pm)
         self._refresh_accent()
         self._add_history()
 
@@ -704,10 +754,14 @@ class MainWindow(QWidget):
     # ============================================================== прогресс и громкость
     def _tick_progress(self):
         st = self.state
+        if self.standalone:
+            self._sa_refresh()
         if not st.has_session or not st.title:
             self.prog.set_value(0)
             self.t_cur.setText("0:00")
             self.t_end.setText("--:--")
+            if not self.standalone:
+                self.glass.set_progress(0, 0)
             self._update_level()
             return
         dur = st.dur if st.dur > 0 else float((self.catalog or {}).get("dur") or 0)
@@ -715,6 +769,12 @@ class MainWindow(QWidget):
         self.t_cur.setText(fmt(pos))
         self.t_end.setText(fmt(dur) if dur > 0 else "--:--")
         self.prog.set_value(int(pos / dur * (PROG_SEGS - 1)) if dur > 0 else 0)
+        if not self.standalone:
+            self.glass.set_progress(pos, dur)
+            # скачок позиции (перемотка в плеере) → автосинхронизация клипа
+            if self._last_pos is not None and abs(pos - self._last_pos - (0.2 if st.playing else 0)) > 2.5:
+                self._auto_sync()
+        self._last_pos = pos
         self._update_level()
 
     def _update_level(self):
@@ -726,6 +786,9 @@ class MainWindow(QWidget):
             self._update_meta()
 
     def _seek_frac(self, v):
+        self._seek_to(v / (PROG_SEGS - 1))
+
+    def _seek_to(self, frac):
         st = self.state
         dur = st.dur if st.dur > 0 else float((self.catalog or {}).get("dur") or 0)
         if not st.has_session or dur <= 0:
@@ -733,11 +796,13 @@ class MainWindow(QWidget):
         if not st.can_seek and not self.demo:
             self.toast.show_text("Этот плеер не поддерживает перемотку")
             return
-        t = v / (PROG_SEGS - 1) * dur
+        t = frac * dur
         st.pos, st.stamp = t, time.monotonic()
         self.media.cmd("seek", t)
+        self._last_pos = t
         if self.clip.vid and self.cfg.get("clip_follow"):
             self.clip.seek(t + self.offset)
+        self._auto_sync()
 
     def _poll_volume(self):
         if not self.sysvol.ok:
@@ -750,7 +815,9 @@ class MainWindow(QWidget):
             self.vol.set_value(round(v * 30))
         self.v_val.setText("MUTE" if muted else str(round(v * 30)))
         self.b_mute.set_kind("mute" if muted else "vol")
-        self.viz.volume = 0.0 if muted else v
+        self._viz_set("volume", 0.0 if muted else v)
+        if not self.standalone:
+            self.glass.set_volume01(v, muted)
 
     def _user_volume(self, v):
         self.sysvol.set(v / 30.0)
@@ -769,17 +836,137 @@ class MainWindow(QWidget):
             self.sysvol.set_mute(not self.sysvol.muted())
             self._poll_volume()
 
+    # ============================================================== общие помощники
+    def _viz_set(self, attr, val):
+        for v in self.vizs:
+            setattr(v, attr, val)
+
+    def _clip_msg(self, text):
+        self.clip_status.setText(text)
+        self.glass.set_status(text)
+
+    def _set_drift(self, text, col=None):
+        self.l_drift.setText(text)
+        self.glass.st_drift.setText(text)
+        if col:
+            self.l_drift.setStyleSheet(f"color:{col}")
+            self.glass.st_drift.setStyleSheet(f"color:{col}")
+
+    def _wire_glass(self):
+        g = self.glass
+        for c in (self.clip_p, self.clip_g):
+            c.ready.connect(lambda c=c: c is self.clip and self._clip_ready())
+            c.failed.connect(lambda code, c=c: c is self.clip and self._clip_failed(code))
+            c.tick.connect(lambda t, s, c=c: c is self.clip and self._clip_tick(t, s))
+            c.info.connect(lambda d, c=c: c is self.clip and self._clip_info(d))
+            c.state.connect(lambda s, c=c: c is self.clip and self._clip_state(s))
+        g.b_play.clicked.connect(self._ctl_toggle)
+        g.b_prev.clicked.connect(lambda: self._ctl_step(-1))
+        g.b_next.clicked.connect(lambda: self._ctl_step(1))
+        g.prog.changed.connect(self._ctl_seek)
+        g.vol.changed.connect(self._ctl_volume)
+        g.b_mute.clicked.connect(self._ctl_mute)
+        g.b_sync.clicked.connect(self._sync_clip)
+        g.b_offm.clicked.connect(lambda: self._shift(-0.5))
+        g.b_offp.clicked.connect(lambda: self._shift(0.5))
+        g.b_ext.clicked.connect(self._open_ext)
+        g.b_swap.clicked.connect(self._toggle_design)
+        g.b_pin.clicked.connect(lambda: self._set_on_top(g.b_pin.isChecked()))
+        g.b_full.clicked.connect(self._toggle_full)
+        g.b_back.clicked.connect(lambda: self._exit_standalone(True))
+        g.search.returnPressed.connect(lambda: self._manual_search(g.search.text()))
+        g.results.itemClicked.connect(lambda it: self._play_clip(g.results.row(it)))
+        g.tracks.itemClicked.connect(self._track_clicked)
+        g.shelf.itemClicked.connect(self._shelf_clicked)
+
+    def _toggle_design(self):
+        self._set_design("pult" if self.design == "glass" else "glass")
+
+    def _set_design(self, d):
+        if d == self.design:
+            return
+        old = self.clip
+        old_pos = self.sa_pos if self.standalone else None
+        self.design = d
+        self.cfg.set("design", d)
+        old.stop()
+        self.stack.setCurrentIndex(1 if d == "glass" else 0)
+        if self.clip_items and self.clip_idx >= 0:
+            self._play_clip(self.clip_idx, start=old_pos)
+        self._glass_track()
+
+    # --- единое управление (для стеклянной панели и горячих клавиш)
+    def _ctl_toggle(self):
+        if self.standalone:
+            self._sa_toggle()
+        else:
+            self.media.cmd("toggle")
+
+    def _ctl_step(self, d):
+        if self.standalone:
+            self._sa_step(d)
+        else:
+            self.media.cmd("next" if d > 0 else "prev")
+
+    def _ctl_seek(self, frac):
+        if self.standalone:
+            self._sa_seek(frac)
+        else:
+            self._seek_to(frac)
+
+    def _ctl_volume(self, v):
+        if self.standalone:
+            self._sa_set_volume(int(round(v * 100)))
+        elif self.sysvol.ok:
+            self.sysvol.set(v)
+            self._poll_volume()
+
+    def _ctl_mute(self):
+        if self.standalone:
+            self._sa_toggle_mute()
+        else:
+            self._toggle_mute()
+
+    def _ctl_volume_step(self, d):
+        if self.standalone:
+            self._sa_set_volume(max(0, min(100, int(self.clip.volume) + d * 5)))
+        else:
+            self._step_volume(d)
+
+    def _glass_track(self):
+        g = self.glass
+        if self.standalone:
+            d = self.sa_cur
+            sub = " · ".join(x for x in (d.get("artist"), self.album_name) if x)
+            g.set_track(d.get("title", "—"), sub, "КЛИП", fmt(self.sa_dur) if self.sa_dur > 0 else "--:--")
+            g.set_playing(self.sa_playing)
+        else:
+            st = self.state
+            if st.has_session and st.title:
+                dur = st.dur if st.dur > 0 else float((self.catalog or {}).get("dur") or 0)
+                g.set_track(st.title, " · ".join(x for x in (st.artist, st.album) if x), st.app,
+                            fmt(dur) if dur > 0 else "--:--")
+                g.set_playing(bool(self.last_playing))
+            else:
+                g.set_track("—", "", "—", "--:--")
+                g.set_playing(False)
+
     # ============================================================== клип
-    def _manual_search(self):
-        q = self.search.text().strip()
+    def _manual_search(self, text=None):
+        q = (text if isinstance(text, str) else self.search.text()).strip()
         if q:
+            self.search.setText(q)
+            self.glass.search.setText(q)
             self.search.clearFocus()
+            self.glass.search.clearFocus()
+            if self.design == "glass" and self.glass.drawer_tab != "clips":
+                self.glass.show_drawer("clips")
             self.search_clip(q, "", "", 0, True, rank=False)
 
     def search_clip(self, query, artist, title, dur, auto_play, rank=True):
         self.clip_req += 1
         req = self.clip_req
-        self.clip_status.setText("Ищу клип…")
+        self._clip_msg("Ищу клип…")
 
         def work():
             items = catalog.yt_search(query)
@@ -790,7 +977,7 @@ class MainWindow(QWidget):
                 return
             self._show_results(items)
             if not items:
-                self.clip_status.setText("Клипов не найдено")
+                self._clip_msg("Клипов не найдено")
                 return
             if auto_play:
                 self.clip_fail = 0
@@ -798,76 +985,122 @@ class MainWindow(QWidget):
 
         def fail(e):
             if req == self.clip_req:
-                self.clip_status.setText("Поиск не удался: " + str(e)[:70])
+                self._clip_msg("Поиск не удался: " + str(e)[:70])
 
         bg(work, done, fail)
 
     def _show_results(self, items):
         self.clip_items = items
         self.clip_idx = -1
-        self.results.clear()
+        lists = (self.results, self.glass.results)
+        for lw in lists:
+            lw.clear()
         for it in items:
-            li = QListWidgetItem(f"{it['title']}\n{it['channel']} · {it['dur_txt']}")
-            li.setSizeHint(QSize(0, 54))
-            self.results.addItem(li)
+            lis = []
+            for lw in lists:
+                li = QListWidgetItem(f"{it['title']}\n{it['channel']} · {it['dur_txt']}")
+                li.setSizeHint(QSize(0, 54))
+                lw.addItem(li)
+                lis.append(li)
 
-            def done(data, li=li):
+            def done(data, lis=lis):
                 pm = QPixmap()
-                try:
-                    if pm.loadFromData(data):
+                if not pm.loadFromData(data):
+                    return
+                for li in lis:
+                    try:
                         li.setIcon(QIcon(pm))
-                except RuntimeError:  # строку уже удалили новым поиском
-                    pass
+                    except RuntimeError:  # строку уже удалили новым поиском
+                        pass
             bg(lambda u=it["thumb"]: http_get(u, 8), done, lambda e: None)
 
-    def _play_clip(self, i):
+    def _apply_clip_audio(self):
+        """В обычном режиме клип всегда без звука, в «своём треке» — со звуком."""
+        for c in (self.clip_p, self.clip_g):
+            c.muted = bool(getattr(self, "sa_muted", False)) if self.standalone else True
+            c.volume = int(self.cfg.get("clip_vol"))
+
+    def _play_clip(self, i, start=None):
         if not (0 <= i < len(self.clip_items)):
             return
         it = self.clip_items[i]
         self.clip_idx = i
         self.results.setCurrentRow(i)
-        start = 0.0
-        if self.state.has_session and self.state.now_pos() > 3:
-            start = self.state.now_pos() + self.offset
-        self.clip_status.setText(f"{it['title']}")
+        self.glass.results.setCurrentRow(i)
+        if start is None:
+            start = 0.0
+            if not self.standalone and self.state.has_session and self.state.now_pos() > 3:
+                start = self.state.now_pos() + self.offset
+        self._clip_msg(f"{it['title']}")
         self.clip_status.set_color(T.TEXT)
+        self.glass.clip_line.setText(f"Клип: {it['title']} — {it['channel']}")
         self.clip_time = 0.0
+        self._apply_clip_audio()
         if self.clip.available():
             self.clip.load(it["id"], start)
         else:
-            self.clip_status.setText("Встроенный плеер недоступен — открой клип в браузере (↗)")
+            self._clip_msg("Встроенный плеер недоступен — открой клип в браузере (↗)")
 
     def _clip_ready(self):
         self.clip_fail = 0
+        self._apply_clip_audio()
+        c = self.clip
+        c.set_muted(c.muted)
+        c.set_volume(c.volume)
+        if self.standalone:
+            c.play()
+            self.sa_playing = True
+            self._sa_refresh()
+            return
         self._apply_clip_play_state()
-        st = self.state
-        if st.has_session and st.now_pos() > 3 and st.playing:
-            self.clip.seek(st.now_pos() + self.offset)
+        if self.cfg.get("auto_sync"):
+            self._auto_sync()
+        else:
+            st = self.state
+            if st.has_session and st.now_pos() > 3 and st.playing:
+                self.clip.seek(st.now_pos() + self.offset)
 
     def _clip_failed(self, code):
         self.clip_fail += 1
         if code == "net":
-            self.clip_status.setText("Нет доступа к YouTube")
+            self._clip_msg("Нет доступа к YouTube")
             return
         if self.clip_fail <= 3 and self.clip_idx + 1 < len(self.clip_items):
-            self.clip_status.setText(f"Этот ролик нельзя встроить (код {code}), пробую следующий…")
+            self._clip_msg(f"Этот ролик нельзя встроить (код {code}), пробую следующий…")
             self._play_clip(self.clip_idx + 1)
         else:
-            self.clip_status.setText(f"Не удалось воспроизвести клип (код {code}). Выбери другой в списке")
+            self._clip_msg(f"Не удалось воспроизвести клип (код {code}). Выбери другой в списке")
+
+    def _clip_info(self, d):
+        if self.standalone and d > 0:
+            self.sa_dur = float(d)
+
+    def _clip_state(self, s):
+        if self.standalone and s == 0:
+            self._sa_step(1)
 
     def _clip_tick(self, t, ytstate):
         self.clip_time = t
+        if self.standalone:
+            self.sa_pos = t
+            if ytstate in (1, 2):
+                self.sa_playing = ytstate == 1
+            if ytstate == 0:
+                self._sa_step(1)
+            self._set_drift("")
+            return
         st = self.state
         if st.has_session and st.playing and ytstate == 1:
             d = t - (st.now_pos() + self.offset)
-            self.l_drift.setText(f"Δ{d:+.1f}с")
             col = T.OK if abs(d) < 1.0 else (T.acc().name() if abs(d) < 3 else T.BAD)
-            self.l_drift.setStyleSheet(f"color:{col}")
+            self._set_drift(f"Δ{d:+.1f}с", col)
+            if abs(d) > 3 and self.cfg.get("auto_sync") and time.monotonic() - self._last_auto > 6:
+                self._auto_sync()
         else:
-            self.l_drift.setText("")
+            self._set_drift("")
 
     def _apply_clip_play_state(self):
-        if not self.clip.vid:
+        if not self.clip.vid or self.standalone:
             return
         if self.cfg.get("clip_follow") and not self.last_playing:
             self.clip.pause()
@@ -886,17 +1119,141 @@ class MainWindow(QWidget):
         self._sync_clip()
 
     def _update_off(self):
-        self.l_off.setText(f"{self.offset:+.1f}с")
+        txt = f"{self.offset:+.1f}с"
+        self.l_off.setText(txt)
         self.l_off.setStyleSheet(f"color:{T.TEXT if self.offset else T.MUTED}")
+        self.glass.l_off.setText(txt)
 
-    def _sync_clip(self):
-        if self.clip.vid and self.state.has_session:
-            self.clip.seek(self.state.now_pos() + self.offset)
+    def _sync_clip(self, silent=False):
+        if self.standalone or not self.clip.vid or not self.state.has_session:
+            return
+        target = self.state.now_pos() + self.offset
+        if silent is True and abs(self.clip_time - target) < 0.8:
+            return
+        self.clip.seek(target)
+        if silent is not True:
             self.toast.show_text("Клип синхронизирован с музыкой")
+
+    # --- автосинхронизация: сразу и повторно через 2 с
+    def _autosync_toggled(self, v):
+        self.cfg.set("auto_sync", bool(v))
+        if v:
+            self._auto_sync()
+
+    def _auto_sync(self, first=True):
+        if not self.cfg.get("auto_sync") or self.standalone or not self.clip.vid:
+            return
+        st = self.state
+        if not (st.has_session and st.playing):
+            return
+        self._last_auto = time.monotonic()
+        self._sync_clip(silent=True)
+        self._sync_token += 1
+        tok = self._sync_token
+        if first:
+            QTimer.singleShot(2000, lambda: tok == self._sync_token and self._auto_sync(False))
+
+    # --- «свой трек»: клип со звуком, музыка из плеера на паузе
+    def _enter_standalone(self, d, row):
+        artist = d.get("artist") or (self.sa_cur.get("artist") if self.standalone else "") or ""
+        self.sa_cur = dict(d, artist=artist)
+        self.sa_idx = row
+        self.sa_dur = float(d.get("dur") or 0)
+        self.sa_pos = 0.0
+        self.sa_playing = True
+        if not self.standalone:
+            self.sa_paused_ext = bool(self.last_playing)
+            if self.last_playing:
+                self.media.cmd("pause")
+        self.standalone = True
+        self.sa_muted = False
+        self.sa_row.show()
+        self.glass.set_standalone(True)
+        q = f"{artist} {d['title']}".strip()
+        self.search.setText(q)
+        self.glass.search.setText(q)
+        self._apply_clip_audio()
+        self._sa_refresh()
+        self._glass_track()
+        self.search_clip(f"{q} official video", artist, d["title"], d.get("dur", 0), True)
+
+    def _exit_standalone(self, resume=True):
+        if not self.standalone:
+            return
+        self.standalone = False
+        self.sa_row.hide()
+        self.glass.set_standalone(False)
+        for c in (self.clip_p, self.clip_g):
+            c.set_muted(True)
+        self._apply_clip_audio()
+        if resume and self.sa_paused_ext and not self.last_playing:
+            self.media.cmd("play")
+        self.sa_paused_ext = False
+        self._glass_track()
+        if self.ext_clip and self.cfg.get("auto_clip"):
+            q, a, t, dur = self.ext_clip
+            self.search_clip(q, a, t, dur, True)
+        else:
+            self.clip.pause()
+
+    def _sa_refresh(self):
+        c = self.clip
+        muted = c.muted
+        vol = int(c.volume)
+        dur = self.sa_dur
+        self.b_sa_play.set_kind("pause" if self.sa_playing else "play")
+        self.b_sa_mute.set_kind("mute" if muted else "vol")
+        self.sa_vol.set_value(round(vol / 5))
+        self.sa_time.setText(f"{fmt(self.sa_pos)} / {fmt(dur) if dur > 0 else '--:--'}")
+        self.sa_prog.set_value(int(self.sa_pos / dur * (PROG_SEGS - 1)) if dur > 0 else 0)
+        g = self.glass
+        g.set_playing(self.sa_playing)
+        g.set_progress(self.sa_pos, dur)
+        g.set_volume01(vol / 100.0, muted)
+
+    def _sa_toggle(self):
+        if not self.clip.vid:
+            return
+        if self.sa_playing:
+            self.clip.pause()
+        else:
+            self.clip.play()
+        self.sa_playing = not self.sa_playing
+        self._sa_refresh()
+
+    def _sa_seek(self, frac):
+        if self.sa_dur > 0 and self.clip.vid:
+            self.sa_pos = frac * self.sa_dur
+            self.clip.seek(self.sa_pos)
+            self._sa_refresh()
+
+    def _sa_set_volume(self, v):
+        v = max(0, min(100, int(v)))
+        self.cfg.set("clip_vol", v)
+        self.sa_muted = False
+        for c in (self.clip_p, self.clip_g):
+            c.set_volume(v)
+            c.set_muted(False)
+        self._sa_refresh()
+
+    def _sa_toggle_mute(self):
+        self.sa_muted = not self.clip.muted
+        for c in (self.clip_p, self.clip_g):
+            c.set_muted(self.sa_muted)
+        self._sa_refresh()
+
+    def _sa_step(self, d):
+        n = len(self.album_tracks)
+        if n == 0:
+            return
+        i = (self.sa_idx + d) % n
+        self._enter_standalone(self.album_tracks[i], i)
+        for lw in (self.tracks, self.glass.tracks):
+            lw.setCurrentRow(i)
 
     def _open_ext(self):
         if 0 <= self.clip_idx < len(self.clip_items):
-            t = int(self.state.now_pos()) if self.state.has_session else 0
+            t = int(self.sa_pos if self.standalone else (self.state.now_pos() if self.state.has_session else 0))
             QDesktopServices.openUrl(QUrl(f"https://www.youtube.com/watch?v={self.clip_items[self.clip_idx]['id']}&t={t}s"))
 
     # ============================================================== альбомы
@@ -932,16 +1289,17 @@ class MainWindow(QWidget):
                 self.cfg.set("history", self.history)
 
     def _rebuild_shelf(self):
-        self.shelf.clear()
         d = data_dir() / "covers"
-        for e in self.history:
-            pm = QPixmap(str(d / e["file"]))
-            it = QListWidgetItem(QIcon(pm) if not pm.isNull() else QIcon(), e["album"])
-            it.setToolTip(f"{e['album']}\n{e['artist']}")
-            it.setData(Qt.UserRole, e)
-            it.setSizeHint(QSize(100, 120))
-            it.setTextAlignment(Qt.AlignHCenter | Qt.AlignTop)
-            self.shelf.addItem(it)
+        for lw in (self.shelf, self.glass.shelf):
+            lw.clear()
+            for e in self.history:
+                pm = QPixmap(str(d / e["file"]))
+                it = QListWidgetItem(QIcon(pm) if not pm.isNull() else QIcon(), e["album"])
+                it.setToolTip(f"{e['album']}\n{e['artist']}")
+                it.setData(Qt.UserRole, e)
+                it.setSizeHint(QSize(100, 120))
+                it.setTextAlignment(Qt.AlignHCenter | Qt.AlignTop)
+                lw.addItem(it)
 
     def _shelf_clicked(self, it):
         e = it.data(Qt.UserRole)
@@ -950,9 +1308,13 @@ class MainWindow(QWidget):
     def show_album(self, album_id, album, artist):
         self.album_req += 1
         req = self.album_req
+        self.album_name = album or ""
         self.a_title.setText(album or "Альбом")
         self.a_sub.setText(artist or "")
+        self.glass.set_album(album, artist)
         self.tracks.clear()
+        self.glass.tracks.clear()
+        self.album_tracks = []
 
         def work():
             aid = album_id
@@ -969,20 +1331,32 @@ class MainWindow(QWidget):
                 d = dict(tr)
                 tn = catalog.norm(tr["title"])
                 d["current"] = bool(cur) and (tn == cur or cur in tn or tn in cur)
-                li = QListWidgetItem()
-                li.setData(Qt.UserRole, d)
-                li.setSizeHint(QSize(0, 28))
-                self.tracks.addItem(li)
+                d.setdefault("artist", artist or "")
+                self.album_tracks.append(d)
+                for lw in (self.tracks, self.glass.tracks):
+                    li = QListWidgetItem()
+                    li.setData(Qt.UserRole, d)
+                    li.setSizeHint(QSize(0, 28))
+                    lw.addItem(li)
             if not tracks:
                 self.a_sub.setText((artist or "") + " · треклист не найден")
+                self.glass.set_album(album, (artist or "") + " · треклист не найден")
 
-        bg(work, done, lambda e: self.a_sub.setText("Треклист недоступен"))
+        def fail(e):
+            self.a_sub.setText("Треклист недоступен")
+            self.glass.set_album(album, "Треклист недоступен")
+
+        bg(work, done, fail)
 
     def _track_clicked(self, it):
         d = it.data(Qt.UserRole)
-        artist = d.get("artist") or self.a_sub.text().split(" · ")[0]
-        self.search.setText(f"{artist} {d['title']}")
-        self.search_clip(f"{artist} {d['title']} official video", artist, d["title"], d.get("dur", 0), True)
+        row = it.listWidget().row(it)
+        if d.get("current"):
+            # это тот же трек, что играет в плеере — возвращаемся к параллельному клипу
+            if self.standalone:
+                self._exit_standalone(True)
+            return
+        self._enter_standalone(d, row)
 
     # ============================================================== окно, фон, клавиши
     def _dark_titlebar(self):
@@ -1047,29 +1421,38 @@ class MainWindow(QWidget):
             if ev.modifiers() & (Qt.ControlModifier | Qt.AltModifier):
                 return False
             if k == Qt.Key_Space:
-                self.media.cmd("toggle")
+                self._ctl_toggle()
             elif k == Qt.Key_Right:
-                self.media.cmd("next")
+                self._ctl_step(1)
             elif k == Qt.Key_Left:
-                self.media.cmd("prev")
+                self._ctl_step(-1)
             elif k == Qt.Key_Up:
-                self._step_volume(1)
+                self._ctl_volume_step(1)
             elif k == Qt.Key_Down:
-                self._step_volume(-1)
+                self._ctl_volume_step(-1)
             elif k == Qt.Key_M:
-                self._toggle_mute()
+                self._ctl_mute()
+            elif k == Qt.Key_D:
+                self._toggle_design()
             elif k == Qt.Key_V:
                 self._cycle_viz()
             elif k == Qt.Key_C:
-                self._set_clip_visible(not self.clip_panel.isVisible())
+                if self.design == "glass":
+                    self.glass.toggle_overlays()
+                else:
+                    self._set_clip_visible(not self.clip_panel.isVisible())
             elif k == Qt.Key_F or k == Qt.Key_F11:
                 self._toggle_full()
             elif k == Qt.Key_P:
                 self._set_on_top(not self.cfg.get("on_top"))
             elif k in (Qt.Key_Slash, Qt.Key_Question):
-                self._set_clip_visible(True)
-                self.search.setFocus()
-                self.search.selectAll()
+                if self.design == "glass":
+                    self.glass.set_overlays(True)
+                    self.glass.open_search()
+                else:
+                    self._set_clip_visible(True)
+                    self.search.setFocus()
+                    self.search.selectAll()
             elif k == Qt.Key_Escape and self.isFullScreen():
                 self.showNormal()
             else:
@@ -1080,7 +1463,8 @@ class MainWindow(QWidget):
     def closeEvent(self, e):
         try:
             self.an.stop()
-            self.clip.stop()
+            self.clip_p.stop()
+            self.clip_g.stop()
         except Exception:
             pass
         super().closeEvent(e)

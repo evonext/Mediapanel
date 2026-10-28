@@ -30,6 +30,9 @@ class Settings:
         "clip_offset": 0.0,
         "history": [],
         "geometry": None,
+        "design": "pult",
+        "auto_sync": True,
+        "clip_vol": 70,
     }
 
     def __init__(self):

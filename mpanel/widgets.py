@@ -8,7 +8,7 @@ from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFontMetrics, QLinearGradient, QPainter,
                            QPainterPath, QPen, QPixmap, QPolygonF, QRadialGradient)
 from PySide6.QtWidgets import (QAbstractButton, QFrame, QHBoxLayout, QLabel, QPushButton,
-                               QSizePolicy, QVBoxLayout, QWidget)
+                               QSizePolicy, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from . import theme as T
 from .audio import N_BANDS
@@ -602,9 +602,10 @@ class VizWidget(QWidget):
     MODES = ["bars", "mirror", "radial", "scope"]
     MODE_NAMES = {"bars": "Столбцы", "mirror": "Зеркало", "radial": "Круг", "scope": "Осциллограф"}
 
-    def __init__(self, analyzer):
+    def __init__(self, analyzer, compact=False):
         super().__init__()
         self.an = analyzer
+        self.compact = compact
         self.mode = "bars"
         self.sens = 1.0
         self.peaks = True
@@ -624,8 +625,8 @@ class VizWidget(QWidget):
         self.lvl_pk_t = [0.0, 0.0]
         self.wave = np.zeros(512)
         self.live = False
-        self.setMinimumHeight(130)
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumHeight(30 if compact else 130)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed if compact else QSizePolicy.Expanding)
         self._t = QTimer(self)
         self._t.setInterval(16)
         self._t.timeout.connect(self._tick)
@@ -710,6 +711,9 @@ class VizWidget(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         W, H = self.width(), self.height()
+        if self.compact:
+            self._mini(p, W, H)
+            return
         r = QRectF(0.5, 0.5, W - 1, H - 1)
         p.setBrush(QColor(T.BG))
         p.setPen(QPen(QColor(T.LINE), 1))
@@ -734,6 +738,22 @@ class VizWidget(QWidget):
         p.drawRoundedRect(tr, 3, 3)
         p.setPen(QColor(T.CY) if self.live else QColor(T.MUTED))
         p.drawText(tr, Qt.AlignCenter, txt)
+
+    def _mini(self, p, W, H):
+        """Компактные скруглённые столбики без фона — для стеклянной панели."""
+        cols = 32
+        gap = 3
+        bw = (W - gap * (cols - 1)) / cols
+        a, a2 = T.acc(), T.acc2()
+        for i in range(cols):
+            v = float(self.h[int(i * self.n / cols)])
+            hh = max(3.0, v * (H - 2))
+            g = QLinearGradient(0, H - hh, 0, H)
+            g.setColorAt(0, a2)
+            g.setColorAt(1, a)
+            p.setPen(Qt.NoPen)
+            p.setBrush(g)
+            p.drawRoundedRect(QRectF(i * (bw + gap), H - hh, bw, hh), bw / 2, bw / 2)
 
     def _bars(self, p, W, H):
         n, gap = self.n, 3
@@ -849,3 +869,50 @@ class VizWidget(QWidget):
                     p.fillRect(QRectF(x, y, 6, sh), col)
                 else:
                     p.fillRect(QRectF(x, y, 6, sh), QColor(T.LINE))
+
+
+def fmt(sec: float) -> str:
+    sec = int(max(0, sec))
+    h, m, s = sec // 3600, (sec // 60) % 60, sec % 60
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+class TrackDelegate(QStyledItemDelegate):
+    def paint(self, p, opt, idx):
+        d = idx.data(Qt.UserRole) or {}
+        r = opt.rect
+        p.save()
+        p.setRenderHint(QPainter.Antialiasing)
+        cur = bool(d.get("current"))
+        hov = bool(opt.state & QStyle.State_MouseOver)
+        rr = QRectF(r).adjusted(1, 1, -1, -1)
+        if cur:
+            c = T.acc()
+            c.setAlpha(30)
+            p.setBrush(c)
+            p.setPen(Qt.NoPen)
+            p.drawRoundedRect(rr, 3, 3)
+        elif hov:
+            p.setBrush(QColor(255, 255, 255, 20))
+            p.setPen(Qt.NoPen)
+            p.drawRoundedRect(rr, 3, 3)
+        p.setFont(T.mono(11, True))
+        fm = p.fontMetrics()
+        y = r.top() + (r.height() + fm.ascent() - fm.descent()) // 2
+        p.setPen(T.acc() if cur else QColor(T.MUTED))
+        p.drawText(r.left() + 8, y, "▶" if cur else f"{int(d.get('n', 0)):02d}")
+        dur = fmt(d.get("dur", 0)) if d.get("dur") else ""
+        dw = fm.horizontalAdvance(dur)
+        p.drawText(r.right() - dw - 8, y, dur)
+        p.setFont(T.ui(13, cur))
+        p.setPen(T.acc2() if cur else QColor(T.TEXT))
+        fm2 = p.fontMetrics()
+        tx = fm2.elidedText(d.get("title", ""), Qt.ElideRight, r.width() - 40 - dw - 24)
+        y2 = r.top() + (r.height() + fm2.ascent() - fm2.descent()) // 2
+        p.drawText(r.left() + 36, y2, tx)
+        p.restore()
+
+    def sizeHint(self, opt, idx):
+        return QSize(0, 28)
+
+
