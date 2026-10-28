@@ -34,6 +34,7 @@ class Settings:
         "auto_sync": True,
         "clip_vol": 70,
         "no_clip": False,
+        "auto_update": True,
         "static_view": "art",
     }
 

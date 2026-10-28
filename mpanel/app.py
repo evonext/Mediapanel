@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QHBoxLayout, QLabel,  # 
                                QScrollArea, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget,
                                QGridLayout, QPushButton, QStackedLayout, QStackedWidget)
 
-from . import catalog, core, theme as T  # noqa: E402
+from . import catalog, core, theme as T, updater  # noqa: E402
 from .audio import Analyzer  # noqa: E402
 from .core import Settings, bg, data_dir, http_get  # noqa: E402
 from .media import DemoMedia, MediaState, WinMedia  # noqa: E402
@@ -519,6 +519,22 @@ class MainWindow(QWidget):
         self.s_accent.toggled.connect(self._accent_toggled)
         self.s_follow = Switch(self.cfg.get("clip_follow"))
         self.s_follow.toggled.connect(self._follow_toggled)
+        self.s_autoupd = Switch(self.cfg.get("auto_update"))
+        self.s_autoupd.toggled.connect(lambda v: self.cfg.set("auto_update", bool(v)))
+        self.upd_box = QWidget()
+        ul = QHBoxLayout(self.upd_box)
+        ul.setContentsMargins(0, 0, 0, 0)
+        ul.setSpacing(8)
+        self.upd_lbl = QLabel("")
+        self.upd_lbl.setFont(T.mono(11))
+        self.upd_lbl.setStyleSheet(f"color:{T.MUTED}")
+        self.upd_btn = QPushButton("Проверить")
+        self.upd_btn.setObjectName("ghost")
+        self.upd_btn.setCursor(Qt.PointingHandCursor)
+        self.upd_btn.setFocusPolicy(Qt.NoFocus)
+        self.upd_btn.clicked.connect(self._upd_clicked)
+        ul.addWidget(self.upd_lbl)
+        ul.addWidget(self.upd_btn)
         self.s_static = QComboBox()
         self.s_static.addItem("Обложка / фото", "art")
         self.s_static.addItem("Визуализатор", "viz")
@@ -535,6 +551,8 @@ class MainWindow(QWidget):
             ("Пики на столбцах", "Задерживающиеся «колпачки»", self.s_peaks),
             ("Цвет из обложки", "Акцент интерфейса подстраивается под альбом", self.s_accent),
             ("Клип следует за паузой", "Пауза и воспроизведение клипа вместе с музыкой", self.s_follow),
+            ("Автообновление", "Новая сборка скачивается сама и ставится при закрытии (только exe)", self.s_autoupd),
+            ("Версия", "Сборка с GitHub: evonext/Mediapanel", self.upd_box),
             ("Что показывать без клипа", "Обложка альбома (или фото исполнителя) либо визуализатор (B)", self.s_static),
             ("Режим без клипа", "Отключает поток YouTube: только обложка или визуализатор — для слабого интернета (N)", self.s_noclip),
             ("Автосинхронизация", "Клип сам подтягивается к музыке и повторно — через 2 с", self.s_autosync),
@@ -573,6 +591,7 @@ class MainWindow(QWidget):
         self.s_autosync.setChecked(bool(self.cfg.get("auto_sync")))
         self._set_no_clip(bool(self.cfg.get("no_clip")), init=True)
         self._set_static_view(self.cfg.get("static_view"), init=True)
+        self._upd_init()
         self.glass.b_pin.setChecked(on_top)
         self._update_off()
         self.stack.setCurrentIndex(1 if self.design == "glass" else 0)
@@ -1030,6 +1049,82 @@ class MainWindow(QWidget):
                 self.glass.show_drawer("clips")
             own = self.standalone or not (self.state.has_session and self.state.playing)
             self.search_clip(q, "", "", 0, True, rank=False, own=own)
+
+    # --- автообновление
+    def _upd_init(self):
+        self.upd_info = None
+        self.upd_busy = False
+        if not updater.frozen():
+            self.upd_lbl.setText(f"v{__import__('mpanel').__version__} · из исходников")
+            self.upd_btn.setEnabled(False)
+            return
+        updater.cleanup_old()
+        b = updater.current_build()
+        self.upd_lbl.setText(f"сборка {b[:7] or '—'}")
+        if updater.pending():
+            self._upd_ready()
+        elif self.cfg.get("auto_update"):
+            QTimer.singleShot(8000, lambda: self._check_update(False))
+
+    def _upd_clicked(self):
+        if updater.pending():
+            self._upd_restart()
+        else:
+            self._check_update(True)
+
+    def _check_update(self, manual):
+        if self.upd_busy:
+            return
+        self.upd_busy = True
+        self.upd_lbl.setText("проверяю…")
+
+        def done(info):
+            self.upd_busy = False
+            self.upd_info = info
+            if not info:
+                self.upd_lbl.setText(f"актуальная · {updater.current_build()[:7] or '—'}")
+                if manual:
+                    self.toast.show_text("Установлена последняя версия")
+                return
+            self.upd_lbl.setText(f"найдена сборка {info['sha'][:7]}")
+            if manual or self.cfg.get("auto_update"):
+                self._download_update()
+
+        def fail(e):
+            self.upd_busy = False
+            self.upd_lbl.setText("нет связи с GitHub")
+            if manual:
+                self.toast.show_text("Не удалось проверить обновления")
+        bg(updater.check, done, fail)
+
+    def _download_update(self):
+        info = self.upd_info
+        if not info or self.upd_busy:
+            return
+        self.upd_busy = True
+        self.upd_lbl.setText("скачиваю обновление…")
+
+        def done(_):
+            self.upd_busy = False
+            self._upd_ready()
+
+        def fail(e):
+            self.upd_busy = False
+            self.upd_lbl.setText("не удалось скачать: " + str(e)[:40])
+        bg(lambda: updater.download(info), done, fail)
+
+    def _upd_ready(self):
+        self.upd_lbl.setText("обновление готово")
+        self.upd_btn.setText("Перезапустить")
+        self.upd_btn.setEnabled(True)
+        self.toast.show_text("Обновление скачано — установится при закрытии")
+
+    def _upd_restart(self):
+        if updater.apply_pending():
+            updater.restart()
+            QApplication.instance().quit()
+        else:
+            self.toast.show_text("Не удалось установить (нет прав на запись рядом с exe)")
 
     def _set_static_view(self, v, init=False):
         v = v if v in ("art", "viz") else "art"
@@ -1649,6 +1744,8 @@ class MainWindow(QWidget):
             self.an.stop()
             self.clip_p.stop()
             self.clip_g.stop()
+            if updater.frozen() and updater.pending():
+                updater.apply_pending()
         except Exception:
             pass
         super().closeEvent(e)

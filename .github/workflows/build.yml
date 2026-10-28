@@ -15,6 +15,9 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -r requirements.txt pyinstaller
+      - name: Stamp build id
+        shell: bash
+        run: printf 'BUILD = "%s"\n' "$GITHUB_SHA" > mpanel/_build.py
       - name: Build (one file)
         shell: cmd
         run: >
@@ -22,6 +25,7 @@ jobs:
           --collect-submodules winrt --collect-binaries winrt --collect-data winrt
           --hidden-import winrt.windows.media.control --hidden-import winrt.windows.storage.streams
           --hidden-import winrt.windows.foundation --hidden-import winrt.windows.foundation.collections
+          --hidden-import mpanel._build
           --exclude-module tkinter main.py
       - name: Selftest
         continue-on-error: true
@@ -45,6 +49,7 @@ jobs:
         with:
           tag_name: latest
           name: Media Panel (последняя сборка)
+          body: ${{ github.sha }}
           files: |
             dist/MediaPanel.exe
             dist/selftest.txt
