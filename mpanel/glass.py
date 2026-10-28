@@ -117,7 +117,7 @@ class GlassIcon(IconButton):
         k = self.kind
         u = min(w, h) / 40.0
         cx, cy = w / 2, h / 2
-        new = ("clock", "list", "disc", "swap", "chev_d", "chev_u", "close", "back", "eye")
+        new = ("clock", "list", "disc", "swap", "chev_d", "chev_u", "close", "back", "eye", "novideo")
         if k not in new:
             return super()._icon(p, fg, w, h)
         p.setPen(QPen(fg, max(1.6, 1.8 * u), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
@@ -149,6 +149,9 @@ class GlassIcon(IconButton):
             p.drawLine(QPointF(cx + 6 * u, cy), QPointF(cx - 6 * u, cy))
             p.drawLine(QPointF(cx - 6 * u, cy), QPointF(cx - 1 * u, cy - 5 * u))
             p.drawLine(QPointF(cx - 6 * u, cy), QPointF(cx - 1 * u, cy + 5 * u))
+        elif k == "novideo":
+            p.drawRoundedRect(QRectF(cx - 9 * u, cy - 6 * u, 18 * u, 12 * u), 3 * u, 3 * u)
+            p.drawLine(QPointF(cx - 11 * u, cy + 9 * u), QPointF(cx + 11 * u, cy - 9 * u))
         elif k == "eye":
             path = QPainterPath()
             path.moveTo(cx - 10 * u, cy)
@@ -335,6 +338,8 @@ class GlassView(QWidget):
         self.b_hist = GlassIcon("clock", 38, tip="История альбомов")
         self.b_clips = GlassIcon("list", 38, tip="Другие клипы")
         self.b_eye = GlassIcon("eye", 38, tip="Скрыть интерфейс (C)")
+        self.b_noclip = GlassIcon("novideo", 38, tip="Режим без клипа — для слабого интернета (N)")
+        self.b_noclip.setCheckable(True)
         self.b_own = GlassIcon("disc", 38, tip="Играть клип со звуком (свой плеер)")
         self.b_swap = GlassIcon("swap", 38, tip="Классический дизайн (D)")
         self.b_pin = GlassIcon("pin", 38, tip="Поверх всех окон (P)")
@@ -346,7 +351,7 @@ class GlassView(QWidget):
         self.b_hist.clicked.connect(lambda: self.show_drawer("hist"))
         self.b_clips.clicked.connect(lambda: self.show_drawer("clips"))
         self.b_eye.clicked.connect(lambda: self.set_overlays(False))
-        for b in (self.b_search, self.b_own, self.b_hist, self.b_clips, self.b_eye, self.b_swap, self.b_pin, self.b_full):
+        for b in (self.b_search, self.b_own, self.b_noclip, self.b_hist, self.b_clips, self.b_eye, self.b_swap, self.b_pin, self.b_full):
             lay.addWidget(b)
         self.top = t
 

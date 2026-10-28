@@ -33,6 +33,7 @@ class Settings:
         "ui_design": "glass",
         "auto_sync": True,
         "clip_vol": 70,
+        "no_clip": False,
     }
 
     def __init__(self):

@@ -271,11 +271,14 @@ class MainWindow(QWidget):
         self.b_clipvis.setCheckable(True)
         self.b_full = IconButton("full", 38, tip="Во весь экран (F)")
         self.b_design = SwapButton("swap", 38, tip="Второй дизайн — Liquid (D)")
+        self.b_noclip = SwapButton("novideo", 38, tip="Режим без клипа — для слабого интернета (N)")
+        self.b_noclip.setCheckable(True)
+        self.b_noclip.clicked.connect(lambda: self._set_no_clip(self.b_noclip.isChecked()))
         self.b_design.clicked.connect(self._toggle_design)
         self.b_pin.clicked.connect(lambda: self._set_on_top(self.b_pin.isChecked()))
         self.b_clipvis.clicked.connect(lambda: self._set_clip_visible(self.b_clipvis.isChecked()))
         self.b_full.clicked.connect(self._toggle_full)
-        for b in (self.b_design, self.b_pin, self.b_clipvis, self.b_full):
+        for b in (self.b_design, self.b_noclip, self.b_pin, self.b_clipvis, self.b_full):
             row.addWidget(b, 0, Qt.AlignVCenter)
         pn.lay.addLayout(row)
         self._update_meta()
@@ -516,6 +519,8 @@ class MainWindow(QWidget):
         self.s_accent.toggled.connect(self._accent_toggled)
         self.s_follow = Switch(self.cfg.get("clip_follow"))
         self.s_follow.toggled.connect(self._follow_toggled)
+        self.s_noclip = Switch(self.cfg.get("no_clip"))
+        self.s_noclip.toggled.connect(self._set_no_clip)
         self.s_autosync = Switch(self.cfg.get("auto_sync"))
         self.s_autosync.toggled.connect(self._autosync_toggled)
         self.s_top = Switch(self.cfg.get("on_top"))
@@ -526,6 +531,7 @@ class MainWindow(QWidget):
             ("Пики на столбцах", "Задерживающиеся «колпачки»", self.s_peaks),
             ("Цвет из обложки", "Акцент интерфейса подстраивается под альбом", self.s_accent),
             ("Клип следует за паузой", "Пауза и воспроизведение клипа вместе с музыкой", self.s_follow),
+            ("Режим без клипа", "Отключает поток YouTube: только обложка или визуализатор — для слабого интернета (N)", self.s_noclip),
             ("Автосинхронизация", "Клип сам подтягивается к музыке и повторно — через 2 с", self.s_autosync),
             ("Поверх всех окон", "Панель остаётся над остальными окнами (P)", self.s_top),
         ]
@@ -560,6 +566,7 @@ class MainWindow(QWidget):
         if on_top:
             self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
         self.s_autosync.setChecked(bool(self.cfg.get("auto_sync")))
+        self._set_no_clip(bool(self.cfg.get("no_clip")), init=True)
         self.glass.b_pin.setChecked(on_top)
         self._update_off()
         self.stack.setCurrentIndex(1 if self.design == "glass" else 0)
@@ -914,6 +921,7 @@ class MainWindow(QWidget):
         g.b_ext.clicked.connect(self._open_ext)
         g.b_swap.clicked.connect(self._toggle_design)
         g.b_own.clicked.connect(self._toggle_own)
+        g.b_noclip.clicked.connect(lambda: self._set_no_clip(g.b_noclip.isChecked()))
         g.b_cmute.clicked.connect(self._sa_toggle_mute)
         g.cvol.changed.connect(lambda v: self._sa_set_volume(int(round(v * 100))))
         g.b_pin.clicked.connect(lambda: self._set_on_top(g.b_pin.isChecked()))
@@ -1014,7 +1022,34 @@ class MainWindow(QWidget):
             own = self.standalone or not (self.state.has_session and self.state.playing)
             self.search_clip(q, "", "", 0, True, rank=False, own=own)
 
+    def _set_no_clip(self, v, init=False):
+        v = bool(v)
+        self.cfg.set("no_clip", v)
+        for w in (self.b_noclip, self.glass.b_noclip):
+            w.setChecked(v)
+        self.s_noclip.blockSignals(True)
+        self.s_noclip.setChecked(v)
+        self.s_noclip.blockSignals(False)
+        if v:
+            self.clip_req += 1                       # отменить идущий поиск
+            self.clip_p.stop()
+            self.clip_g.stop()
+            if self.standalone:
+                self._exit_standalone(True)
+            self._set_missing(True)
+            self._clip_msg("Режим без клипа: поток YouTube отключён")
+            if not init:
+                self.toast.show_text("Режим без клипа включён")
+        elif not init:
+            self.toast.show_text("Клип включён")
+            if self.ext_clip and self.cfg.get("auto_clip") and not self.standalone:
+                self.search_clip(*self.ext_clip, True)
+
     def search_clip(self, query, artist, title, dur, auto_play, rank=True, own=False):
+        if self.cfg.get("no_clip"):
+            self._set_missing(True)
+            self._clip_msg("Режим без клипа: поток YouTube отключён (N — включить)")
+            return
         self.clip_req += 1
         req = self.clip_req
         self._clip_msg("Ищу клип…")
@@ -1088,7 +1123,7 @@ class MainWindow(QWidget):
             c.volume = int(self.cfg.get("clip_vol"))
 
     def _play_clip(self, i, start=None):
-        if not (0 <= i < len(self.clip_items)):
+        if self.cfg.get("no_clip") or not (0 <= i < len(self.clip_items)):
             return
         it = self.clip_items[i]
         self.clip_idx = i
@@ -1232,6 +1267,9 @@ class MainWindow(QWidget):
 
     # --- «свой трек»: клип со звуком, музыка из плеера на паузе
     def _enter_standalone(self, d, row):
+        if self.cfg.get("no_clip"):
+            self._clip_msg("Свой плеер работает через YouTube — выключи режим без клипа (N)")
+            return
         artist = d.get("artist") or (self.sa_cur.get("artist") if self.standalone else "") or ""
         self.sa_cur = dict(d, artist=artist)
         self.sa_idx = row
@@ -1336,6 +1374,9 @@ class MainWindow(QWidget):
             self._enter_own(max(0, self.clip_idx))
 
     def _enter_own(self, i):
+        if self.cfg.get("no_clip"):
+            self._clip_msg("Свой плеер работает через YouTube — выключи режим без клипа (N)")
+            return
         if not (0 <= i < len(self.clip_items)):
             self._clip_msg("Сначала найди клип (/)")
             return
@@ -1552,6 +1593,8 @@ class MainWindow(QWidget):
                 self._toggle_design()
             elif k == Qt.Key_O:
                 self._toggle_own()
+            elif k == Qt.Key_N:
+                self._set_no_clip(not self.cfg.get("no_clip"))
             elif k == Qt.Key_V:
                 self._cycle_viz()
             elif k == Qt.Key_C:
