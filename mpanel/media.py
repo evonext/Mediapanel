@@ -40,6 +40,19 @@ class MediaState:
         return max(0.0, p)
 
 
+def _own_tokens():
+    import os
+    import sys
+    stem = os.path.splitext(os.path.basename(sys.executable or ""))[0].lower()
+    return tuple(t for t in {"mediapanel", "qtwebengine", stem} if t)
+
+
+def is_own_session(aumid: str) -> bool:
+    """Встроенный плеер (Chromium) сам регистрируется в Windows как медиа-сессия — её надо игнорировать."""
+    a = (aumid or "").lower()
+    return any(t in a for t in _own_tokens())
+
+
 def pretty_app(aumid: str) -> str:
     a = (aumid or "").lower()
     table = {
@@ -95,8 +108,26 @@ class WinMedia(threading.Thread):
                 log("poll:", e)
             await asyncio.sleep(0.6)
 
+    def _pick(self):
+        """Текущая сессия, но не наша собственная (иначе клип «синхронизируется» сам с собой)."""
+        cur = self.mgr.get_current_session()
+        if cur and not is_own_session(cur.source_app_user_model_id):
+            return cur
+        try:
+            others = [x for x in self.mgr.get_sessions()
+                      if not is_own_session(x.source_app_user_model_id)]
+        except Exception:
+            return None if cur else cur
+        for x in others:
+            try:
+                if int(x.get_playback_info().playback_status) == 4:
+                    return x
+            except Exception:
+                pass
+        return others[0] if others else None
+
     async def _poll(self):
-        sess = self.mgr.get_current_session()
+        sess = self._pick()
         if not sess:
             self._emit(MediaState(has_session=False))
             self._key = None
@@ -167,7 +198,7 @@ class WinMedia(threading.Thread):
         ui_post(lambda s=st: self.on_state(s))
 
     async def _cmd(self, name, arg):
-        sess = self.mgr.get_current_session() if self.mgr else None
+        sess = self._pick() if self.mgr else None
         if not sess:
             return
         try:

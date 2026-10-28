@@ -455,7 +455,7 @@ class MainWindow(QWidget):
         self.results.setIconSize(QSize(80, 45))
         self.results.setSpacing(2)
         self.results.setMinimumHeight(110)
-        self.results.itemClicked.connect(lambda it: self._play_clip(self.results.row(it)))
+        self.results.itemClicked.connect(lambda it: self._result_clicked(self.results.row(it)))
         pn.lay.addWidget(self.results, 1)
         return pn
 
@@ -920,7 +920,7 @@ class MainWindow(QWidget):
         g.b_full.clicked.connect(self._toggle_full)
         g.b_back.clicked.connect(lambda: self._exit_standalone(True))
         g.search.returnPressed.connect(lambda: self._manual_search(g.search.text()))
-        g.results.itemClicked.connect(lambda it: self._play_clip(g.results.row(it)))
+        g.results.itemClicked.connect(lambda it: self._result_clicked(g.results.row(it)))
         g.tracks.itemClicked.connect(self._track_clicked)
         g.shelf.itemClicked.connect(self._shelf_clicked)
 
@@ -1069,6 +1069,17 @@ class MainWindow(QWidget):
                     except RuntimeError:  # строку уже удалили новым поиском
                         pass
             bg(lambda u=it["thumb"]: http_get(u, 8), done, lambda e: None)
+
+    def _result_clicked(self, i):
+        """Выбор клипа в списке: играет музыка в другом плеере — клип идёт параллельно без звука,
+        иначе включаем клип как самостоятельный плеер со звуком."""
+        if self.standalone:
+            self.clip_fail = 0
+            self._play_clip(i, start=0.0)
+        elif self.state.has_session and self.state.playing:
+            self._play_clip(i)
+        else:
+            self._enter_own(i)
 
     def _apply_clip_audio(self):
         """В обычном режиме клип всегда без звука, в «своём треке» — со звуком."""
