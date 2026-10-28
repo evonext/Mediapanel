@@ -52,6 +52,22 @@ def deezer_find(artist: str, title: str) -> dict | None:
     return None
 
 
+def deezer_artist_pic(artist: str) -> str | None:
+    """Фото исполнителя (Deezer)."""
+    if not artist:
+        return None
+    try:
+        d = get_json("https://api.deezer.com/search/artist?limit=5&q=" + quote(artist))
+    except Exception:
+        return None
+    items = d.get("data") or []
+    a = norm(artist)
+    best = next((x for x in items if norm(x.get("name")) == a), items[0] if items else None)
+    if not best:
+        return None
+    return best.get("picture_xl") or best.get("picture_big") or best.get("picture_medium")
+
+
 def deezer_album_search(artist: str, album: str) -> dict | None:
     a, b = norm(artist), norm(album)
     if not b:

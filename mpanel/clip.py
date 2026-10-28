@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 try:
     from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
     from PySide6.QtWebEngineWidgets import QWebEngineView
+    from PySide6.QtWebEngineCore import QWebEngineUrlRequestInterceptor
     WEBENGINE_OK = True
     WEBENGINE_ERR = ""
 except Exception as _e:  # noqa: BLE001
@@ -19,6 +20,25 @@ except Exception as _e:  # noqa: BLE001
     WEBENGINE_ERR = str(_e)
 
 from . import theme as T
+
+AD_PARTS = ("doubleclick.net", "googlesyndication.com", "googleadservices.com", "adservice.google",
+            "/pagead/", "/api/stats/ads", "/ptracking", "get_midroll", "google-analytics.com",
+            "/youtubei/v1/log_event", "static.doubleclick")
+
+_ADBLOCK = None
+
+
+def _adblock():
+    """Сетевой блокировщик рекламы (аналог фильтров uBlock) для встроенного плеера."""
+    global _ADBLOCK
+    if _ADBLOCK is None and WEBENGINE_OK:
+        class AdBlock(QWebEngineUrlRequestInterceptor):
+            def interceptRequest(self, info):
+                u = info.requestUrl().toString()
+                if any(b in u for b in AD_PARTS):
+                    info.block(True)
+        _ADBLOCK = AdBlock()
+    return _ADBLOCK
 
 BOX_CONTAIN = "left:0;top:0;width:100%;height:100%"
 BOX_COVER = ("left:50%;top:50%;width:max(100vw,calc(100vh*16/9));height:max(100vh,calc(100vw*9/16));"
@@ -122,6 +142,10 @@ class ClipPlayer(QWidget):
             self.view = QWebEngineView()
             self.view.setContextMenuPolicy(Qt.NoContextMenu)
             page = self.view.page()
+            try:
+                page.profile().setUrlRequestInterceptor(_adblock())
+            except Exception:
+                pass
             page.setAudioMuted(True)
             page.setBackgroundColor(QColor("#000000"))
             s = page.settings()

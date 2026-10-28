@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLineEdit, QListView, QListW
 
 from . import theme as T
 from .clip import ClipPlayer
-from .widgets import Cover, ElideLabel, IconButton, TrackDelegate, VizWidget, fmt
+from .widgets import Backdrop, Cover, ElideLabel, IconButton, TrackDelegate, VizWidget, fmt
 
 WHITE = "#f4f8fb"
 SOFT = "#aab6c2"
@@ -31,18 +31,19 @@ class Glass(QWidget):
         r = QRectF(0.5, 0.5, w - 1, h - 1)
         rad = self.radius
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(8, 11, 16, self.alpha))
+        p.setBrush(QColor(14, 16, 22, int(self.alpha * 0.72)))
         p.drawRoundedRect(r, rad, rad)
+        # мягкий свет сверху — без глянца
         g = QLinearGradient(0, 0, 0, h)
-        g.setColorAt(0, QColor(255, 255, 255, 36))
-        g.setColorAt(0.5, QColor(255, 255, 255, 8))
-        g.setColorAt(1, QColor(255, 255, 255, 18))
+        g.setColorAt(0, QColor(255, 255, 255, 16))
+        g.setColorAt(0.35, QColor(255, 255, 255, 0))
         p.setBrush(g)
         p.drawRoundedRect(r, rad, rad)
-        b = QLinearGradient(0, 0, w, h)
-        b.setColorAt(0, QColor(255, 255, 255, 120))
-        b.setColorAt(0.5, QColor(255, 255, 255, 28))
-        b.setColorAt(1, QColor(255, 255, 255, 80))
+        # тонкая кромка: ярче у верхнего края
+        b = QLinearGradient(0, 0, 0, h)
+        b.setColorAt(0, QColor(255, 255, 255, 70))
+        b.setColorAt(0.4, QColor(255, 255, 255, 24))
+        b.setColorAt(1, QColor(255, 255, 255, 38))
         p.setPen(QPen(QBrush(b), 1))
         p.setBrush(Qt.NoBrush)
         p.drawRoundedRect(r, rad, rad)
@@ -72,19 +73,15 @@ class Pill(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r = QRectF(0.5, 0.5, self.width() - 1, self.height() - 1)
-        a = T.acc()
         if self.accent:
-            fill = QColor(a)
-            fill.setAlpha(70)
-            border = QColor(a)
-            border.setAlpha(170)
+            fill, border, fg = QColor(255, 255, 255, 235), QColor(255, 255, 255, 0), QColor("#0d0f14")
         else:
-            fill, border = QColor(255, 255, 255, 18), QColor(255, 255, 255, 40)
+            fill, border, fg = QColor(255, 255, 255, 14), QColor(255, 255, 255, 30), QColor(WHITE)
         p.setBrush(fill)
         p.setPen(QPen(border, 1))
-        p.drawRoundedRect(r, 12, 12)
-        p.setFont(T.ui(11.5, True))
-        p.setPen(QColor(WHITE))
+        p.drawRoundedRect(r, r.height() / 2, r.height() / 2)
+        p.setFont(T.ui(11, True))
+        p.setPen(fg)
         p.drawText(self.rect(), Qt.AlignCenter, self.text_)
 
 
@@ -95,35 +92,25 @@ class GlassIcon(IconButton):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
-        a = T.acc()
         on = self.isCheckable() and self.isChecked()
         hov = self.underMouse()
-        r = QRectF(1, 1, w - 2, h - 2)
+        r = QRectF(0.5, 0.5, w - 1, h - 1)
+        p.setPen(Qt.NoPen)
         if self.primary:
-            for i, al in ((8, 20), (5, 34), (2, 54)):
-                gc = QColor(a)
-                gc.setAlpha(al + (30 if hov else 0))
-                p.setBrush(gc)
-                p.setPen(Qt.NoPen)
-                p.drawEllipse(r.adjusted(-i, -i, i, i))
-            g = QLinearGradient(0, 0, 0, h)
-            g.setColorAt(0, T.acc2())
-            g.setColorAt(1, a)
-            p.setBrush(g)
-            p.setPen(QPen(QColor(255, 255, 255, 120), 1))
-            fg = QColor("#1a0a00")
+            if hov:
+                p.setBrush(QColor(255, 255, 255, 40))
+                p.drawEllipse(r.adjusted(-3, -3, 3, 3))
+            p.setBrush(QColor(255, 255, 255, 245 if hov else 232))
+            p.drawEllipse(r)
+            fg = QColor("#0d0f14")
         else:
             if on:
-                fill = QColor(a)
-                fill.setAlpha(95)
-                border = QColor(a)
+                p.setBrush(QColor(255, 255, 255, 230))
+                fg = QColor("#0d0f14")
             else:
-                fill = QColor(255, 255, 255, 40 if hov else 16)
-                border = QColor(255, 255, 255, 70 if hov else 40)
-            p.setBrush(fill)
-            p.setPen(QPen(border, 1))
-            fg = QColor(WHITE)
-        p.drawEllipse(r)
+                p.setBrush(QColor(255, 255, 255, 34 if hov else 0))
+                fg = QColor(WHITE)
+            p.drawEllipse(r)
         self._icon(p, fg, w, h)
 
     def _icon(self, p, fg, w, h):
@@ -213,25 +200,17 @@ class ThinSlider(QWidget):
         w, h = self.width(), self.height()
         cy = h / 2
         x0, x1 = 7, w - 7
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, 46))
-        p.drawRoundedRect(QRectF(x0, cy - 2, x1 - x0, 4), 2, 2)
-        xv = x0 + (x1 - x0) * self.v
-        g = QLinearGradient(x0, 0, max(x0 + 1, xv), 0)
-        g.setColorAt(0, T.acc2())
-        g.setColorAt(1, T.acc())
-        glow = T.acc()
-        glow.setAlpha(60)
-        p.setBrush(glow)
-        p.drawRoundedRect(QRectF(x0, cy - 4, max(0, xv - x0), 8), 4, 4)
-        p.setBrush(g)
-        p.drawRoundedRect(QRectF(x0, cy - 2, max(0, xv - x0), 4), 2, 2)
         hov = self.underMouse() or self._drag
-        kr = 6.5 if hov else 5
-        p.setBrush(QColor(255, 255, 255, 70))
-        p.drawEllipse(QPointF(xv, cy), kr + 3, kr + 3)
-        p.setBrush(QColor("#ffffff"))
-        p.drawEllipse(QPointF(xv, cy), kr, kr)
+        th = 5 if hov else 4
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 50))
+        p.drawRoundedRect(QRectF(x0, cy - th / 2, x1 - x0, th), th / 2, th / 2)
+        xv = x0 + (x1 - x0) * self.v
+        p.setBrush(QColor(255, 255, 255, 235))
+        p.drawRoundedRect(QRectF(x0, cy - th / 2, max(0, xv - x0), th), th / 2, th / 2)
+        if hov:
+            p.setBrush(QColor("#ffffff"))
+            p.drawEllipse(QPointF(xv, cy), 6, 6)
 
 
 class Aurora(QWidget):
@@ -254,7 +233,7 @@ class Aurora(QWidget):
         p.fillRect(self.rect(), QColor(5, 7, 11))
         t = time.monotonic()
         a, a2, cy = T.acc(), T.acc2(), QColor(T.CY)
-        for i, (c, al, rad) in enumerate(((a, 110, 0.62), (cy, 70, 0.55), (a2, 80, 0.5))):
+        for i, (c, al, rad) in enumerate(((a, 62, 0.62), (cy, 40, 0.55), (a2, 44, 0.5))):
             x = W * (0.5 + 0.38 * math.sin(t * (0.21 + i * 0.07) + i * 2.1))
             y = H * (0.5 + 0.34 * math.cos(t * (0.17 + i * 0.05) + i * 1.3))
             g = QRadialGradient(QPointF(x, y), max(W, H) * rad)
@@ -291,6 +270,9 @@ class GlassView(QWidget):
         self.bg.setParent(self)
         self.clip = ClipPlayer(fill=True, transparent=True)
         self.clip.setParent(self)
+        self.backdrop = Backdrop(analyzer)
+        self.backdrop.setParent(self)
+        self.backdrop.hide()
 
         self._build_album()
         self._build_top()
@@ -305,7 +287,7 @@ class GlassView(QWidget):
 
     # ----------------------------------------------------------------- сборка
     def _build_album(self):
-        c = Glass(self, 24, 150)
+        c = Glass(self, 26, 150)
         lay = QHBoxLayout(c)
         lay.setContentsMargins(14, 12, 14, 12)
         lay.setSpacing(12)
@@ -353,6 +335,7 @@ class GlassView(QWidget):
         self.b_hist = GlassIcon("clock", 38, tip="История альбомов")
         self.b_clips = GlassIcon("list", 38, tip="Другие клипы")
         self.b_eye = GlassIcon("eye", 38, tip="Скрыть интерфейс (C)")
+        self.b_own = GlassIcon("disc", 38, tip="Играть клип со звуком (свой плеер)")
         self.b_swap = GlassIcon("swap", 38, tip="Классический дизайн (D)")
         self.b_pin = GlassIcon("pin", 38, tip="Поверх всех окон (P)")
         self.b_full = GlassIcon("full", 38, tip="Во весь экран (F)")
@@ -363,22 +346,31 @@ class GlassView(QWidget):
         self.b_hist.clicked.connect(lambda: self.show_drawer("hist"))
         self.b_clips.clicked.connect(lambda: self.show_drawer("clips"))
         self.b_eye.clicked.connect(lambda: self.set_overlays(False))
-        for b in (self.b_search, self.b_hist, self.b_clips, self.b_eye, self.b_swap, self.b_pin, self.b_full):
+        for b in (self.b_search, self.b_own, self.b_hist, self.b_clips, self.b_eye, self.b_swap, self.b_pin, self.b_full):
             lay.addWidget(b)
         self.top = t
 
     def _build_status(self):
-        s = Glass(self, 20, 140)
+        s = Glass(self, 24, 150)
         lay = QHBoxLayout(s)
-        lay.setContentsMargins(14, 6, 8, 6)
-        lay.setSpacing(8)
-        self.st_text = ElideLabel("Нет медиа-сессии", T.ui(12.5, True), WHITE)
+        lay.setContentsMargins(16, 5, 8, 5)
+        lay.setSpacing(6)
+        self.st_text = ElideLabel("Нет медиа-сессии", T.ui(12, True), WHITE)
         lay.addWidget(self.st_text, 1)
         self.st_drift = QLabel("")
         self.st_drift.setFont(T.ui(12, True))
         self.st_drift.setStyleSheet(f"color:{SOFT}")
         lay.addWidget(self.st_drift)
-        self.b_back = GlassIcon("back", 28, tip="Вернуться к музыке")
+        self.b_sync = GlassIcon("sync", 30, tip="Синхронизировать клип с музыкой")
+        self.b_offm = GlassIcon("minus", 30, tip="Сдвиг клипа −0.5 с")
+        self.l_off = QLabel("+0.0с")
+        self.l_off.setFont(T.ui(12, True))
+        self.l_off.setStyleSheet(f"color:{SOFT}")
+        self.b_offp = GlassIcon("plus", 30, tip="Сдвиг клипа +0.5 с")
+        self.b_ext = GlassIcon("ext", 30, tip="Открыть клип в браузере")
+        for w in (self.b_sync, self.b_offm, self.l_off, self.b_offp, self.b_ext):
+            lay.addWidget(w)
+        self.b_back = GlassIcon("back", 30, tip="Вернуться к музыке")
         self.b_back.hide()
         lay.addWidget(self.b_back)
         self.status = s
@@ -417,7 +409,7 @@ class GlassView(QWidget):
         # --- слева: информация о треке
         left = QVBoxLayout()
         left.setSpacing(2)
-        self.title = ElideLabel("—", T.ui(22, True), WHITE)
+        self.title = ElideLabel("—", T.ui(24, True), WHITE)
         self.sub = ElideLabel("", T.ui(13), SOFT)
         left.addWidget(self.title)
         left.addWidget(self.sub)
@@ -463,32 +455,31 @@ class GlassView(QWidget):
         pr.addWidget(self.t_end)
         mid.addLayout(pr)
         lay.addLayout(mid, 6)
-        # --- справа: громкость, визуализатор, управление клипом
+        # --- справа: громкость системы, громкость клипа, мини-визуализатор
         right = QVBoxLayout()
-        right.setSpacing(6)
+        right.setSpacing(5)
         vr = QHBoxLayout()
-        vr.setSpacing(6)
-        self.b_mute = GlassIcon("vol", 32, tip="Звук (M)")
+        vr.setSpacing(8)
+        self.b_mute = GlassIcon("vol", 30, tip="Звук (M)")
         self.vol = ThinSlider()
         vr.addWidget(self.b_mute)
         vr.addWidget(self.vol, 1)
         right.addLayout(vr)
-        self.viz = VizWidget(analyzer, compact=True)
-        self.viz.setFixedHeight(34)
-        right.addWidget(self.viz)
         cr = QHBoxLayout()
-        cr.setSpacing(5)
-        cr.addStretch(1)
-        self.b_sync = GlassIcon("sync", 30, tip="Синхронизировать клип с музыкой")
-        self.b_offm = GlassIcon("minus", 30, tip="Сдвиг клипа −0.5 с")
-        self.l_off = QLabel("+0.0с")
-        self.l_off.setFont(T.ui(12, True))
-        self.l_off.setStyleSheet(f"color:{SOFT}")
-        self.b_offp = GlassIcon("plus", 30, tip="Сдвиг клипа +0.5 с")
-        self.b_ext = GlassIcon("ext", 30, tip="Открыть в браузере")
-        for w in (self.b_sync, self.b_offm, self.l_off, self.b_offp, self.b_ext):
-            cr.addWidget(w)
+        cr.setSpacing(8)
+        self.b_cmute = GlassIcon("mute", 30, tip="Включить звук клипа")
+        self.cvol = ThinSlider()
+        self.cvol.setToolTip("Громкость клипа")
+        lab = QLabel("КЛИП")
+        lab.setFont(T.ui(10, True))
+        lab.setStyleSheet(f"color:{SOFT}")
+        cr.addWidget(self.b_cmute)
+        cr.addWidget(self.cvol, 1)
+        cr.addWidget(lab)
         right.addLayout(cr)
+        self.viz = VizWidget(analyzer, compact=True)
+        self.viz.setFixedHeight(30)
+        right.addWidget(self.viz)
         lay.addLayout(right, 4)
         self.bar = b
 
@@ -502,19 +493,20 @@ class GlassView(QWidget):
         m = 20
         self.bg.setGeometry(0, 0, W, H)
         self.clip.setGeometry(0, 0, W, H)
+        self.backdrop.setGeometry(0, 0, W, H)
         self.album_card.setGeometry(m, m, 300, 90)
-        top_h = max(120, H - m - 90 - 8 - 150 - m)
+        top_h = max(120, H - m - 90 - 8 - 162 - m)
         self.album_drawer.setGeometry(m, m + 98, 300, min(420, top_h))
         tw = self.top.layout().sizeHint().width()
         self.top.setGeometry(W - m - tw, m + 6, tw, 52)
-        dh = max(160, min(560, H - (m + 66) - 150 - m - 6))
+        dh = max(160, min(560, H - (m + 66) - 162 - m - 6))
         self.drawer.setGeometry(W - m - 360, m + 66, 360, dh)
         space = W - 2 * (m + max(300, tw)) - 20
-        sw = max(0, min(520, space))
-        self.status.setGeometry((W - sw) // 2, m + 10, sw, 42)
-        self.status.setVisible(sw >= 220 and self.overlays_on)
+        sw = max(0, min(640, space))
+        self.status.setGeometry((W - sw) // 2, m + 6, sw, 46)
+        self.status.setVisible(sw >= 400 and self.overlays_on)
         bw = min(W - 2 * m, 1240)
-        self.bar.setGeometry((W - bw) // 2, H - m - 128, bw, 128)
+        self.bar.setGeometry((W - bw) // 2, H - m - 140, bw, 140)
 
     # ----------------------------------------------------------------- состояния интерфейса
     def set_overlays(self, on: bool):
@@ -602,3 +594,12 @@ class GlassView(QWidget):
         self.standalone = on
         self.b_back.setVisible(on)
         self.p_viz.set_text("СВОЙ ЗВУК" if on else self.p_viz.text_, on)
+
+    def set_missing(self, missing: bool):
+        self.backdrop.setVisible(missing)
+        for w in self._overlay:
+            w.raise_()
+
+    def set_clip_volume(self, v01, audio_on):
+        self.cvol.set_value(v01 if audio_on else 0.0)
+        self.b_cmute.set_kind("vol" if audio_on and v01 > 0 else "mute")

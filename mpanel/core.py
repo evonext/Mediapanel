@@ -30,7 +30,7 @@ class Settings:
         "clip_offset": 0.0,
         "history": [],
         "geometry": None,
-        "design": "pult",
+        "ui_design": "glass",
         "auto_sync": True,
         "clip_vol": 70,
     }

@@ -4,7 +4,7 @@ import random
 import time
 
 import numpy as np
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QBrush, QColor, QFontMetrics, QLinearGradient, QPainter,
                            QPainterPath, QPen, QPixmap, QPolygonF, QRadialGradient)
 from PySide6.QtWidgets import (QAbstractButton, QFrame, QHBoxLayout, QLabel, QPushButton,
@@ -916,3 +916,48 @@ class TrackDelegate(QStyledItemDelegate):
         return QSize(0, 28)
 
 
+
+
+class Backdrop(QWidget):
+    """Заглушка вместо клипа: обложка альбома → фото исполнителя → визуализатор."""
+
+    def __init__(self, analyzer):
+        super().__init__()
+        self.pm = None
+        self.small = None
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        self.viz = VizWidget(analyzer)
+        lay.addWidget(self.viz)
+
+    def set_art(self, pm):
+        self.pm = pm if (pm is not None and not pm.isNull()) else None
+        self.small = (self.pm.scaled(32, 32, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+                      if self.pm else None)
+        self.viz.setVisible(self.pm is None)
+        self.update()
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor(5, 7, 11))
+        if self.pm is None:
+            return
+        W, H = self.width(), self.height()
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        sc = max(W / self.small.width(), H / self.small.height())
+        w, h = int(self.small.width() * sc), int(self.small.height() * sc)
+        p.setOpacity(0.7)
+        p.drawPixmap(QRect((W - w) // 2, (H - h) // 2, w, h), self.small)
+        p.setOpacity(1)
+        p.fillRect(self.rect(), QColor(0, 0, 0, 120))
+        s = int(max(120, min(520, min(W, H) * 0.56)))
+        r = QRectF((W - s) / 2, (H - s) / 2 - H * 0.03, s, s)
+        for i, al in ((28, 10), (18, 16), (9, 26)):
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(0, 0, 0, al))
+            p.drawRoundedRect(r.adjusted(-i, -i + 14, i, i + 14), 22 + i, 22 + i)
+        path = QPainterPath()
+        path.addRoundedRect(r, 20, 20)
+        p.setClipPath(path)
+        sp = self.pm.scaled(s, s, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+        p.drawPixmap(r.toRect(), sp, QRect((sp.width() - s) // 2, (sp.height() - s) // 2, s, s))
